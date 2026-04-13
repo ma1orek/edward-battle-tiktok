@@ -62,21 +62,49 @@ app.get('/avatar', (req, res) => {
   }
 
   const lib = url.startsWith('https') ? https : httpLib;
-  lib.get(url, (upstream) => {
-    const chunks = [];
-    upstream.on('data', c => chunks.push(c));
-    upstream.on('end', () => {
-      const buf = Buffer.concat(chunks);
-      const type = upstream.headers['content-type'] || 'image/jpeg';
-      if (avatarCache.size < 500) avatarCache.set(url, { buf, type });
-      res.set('Content-Type', type);
-      res.set('Access-Control-Allow-Origin', '*');
-      res.set('Cache-Control', 'public, max-age=86400');
-      res.send(buf);
+  const options = {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Referer': 'https://www.tiktok.com/',
+    },
+  };
+
+  const doRequest = (targetUrl, redirectCount = 0) => {
+    if (redirectCount > 5) return res.status(502).end();
+    const l = targetUrl.startsWith('https') ? https : httpLib;
+    l.get(targetUrl, options, (upstream) => {
+      // Handle redirects
+      if ([301, 302, 303, 307, 308].includes(upstream.statusCode)) {
+        const loc = upstream.headers.location;
+        if (loc) {
+          const nextUrl = loc.startsWith('http') ? loc : new URL(loc, targetUrl).toString();
+          return doRequest(nextUrl, redirectCount + 1);
+        }
+      }
+      if (upstream.statusCode !== 200) {
+        console.warn(`Avatar proxy ${upstream.statusCode} for ${targetUrl.substring(0, 80)}`);
+        return res.status(upstream.statusCode).end();
+      }
+      const chunks = [];
+      upstream.on('data', c => chunks.push(c));
+      upstream.on('end', () => {
+        const buf = Buffer.concat(chunks);
+        const type = upstream.headers['content-type'] || 'image/jpeg';
+        if (avatarCache.size < 500) avatarCache.set(url, { buf, type });
+        res.set('Content-Type', type);
+        res.set('Access-Control-Allow-Origin', '*');
+        res.set('Cache-Control', 'public, max-age=86400');
+        res.send(buf);
+      });
+    }).on('error', (e) => {
+      console.warn('Avatar proxy error:', e.message);
+      res.status(502).end();
     });
-  }).on('error', (e) => {
-    res.status(502).end();
-  });
+  };
+
+  doRequest(url);
 });
 
 // === Connection state ===

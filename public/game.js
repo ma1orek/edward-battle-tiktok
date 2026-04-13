@@ -21,6 +21,7 @@ function extractUsername(input) {
 }
 
 function launchGame() {
+  initAudio(); // init audio on user click (required by browsers)
   setupScreen.classList.add('hidden');
   gameContainer.classList.remove('hidden');
   resize();
@@ -97,6 +98,78 @@ const players = new Map();
 const particles = [];
 const hearts = [];  // floating hearts animation
 const avatarCache = new Map();
+
+// === Audio system ===
+let audioCtx = null;
+let audioEnabled = false;
+
+function initAudio() {
+  if (audioCtx) return;
+  try {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    audioEnabled = true;
+  } catch (e) { console.warn('Audio init failed'); }
+}
+
+function playTap(pitch = 1) {
+  if (!audioEnabled || !audioCtx) return;
+  try {
+    const now = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(800 * pitch, now);
+    osc.frequency.exponentialRampToValueAtTime(1200 * pitch, now + 0.05);
+    osc.frequency.exponentialRampToValueAtTime(400 * pitch, now + 0.12);
+
+    gain.gain.setValueAtTime(0.12, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(now);
+    osc.stop(now + 0.15);
+  } catch (e) {}
+}
+
+function playCritical() {
+  if (!audioEnabled || !audioCtx) return;
+  try {
+    const now = audioCtx.currentTime;
+    // Triangle rising
+    for (let i = 0; i < 3; i++) {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(440 + i * 220, now + i * 0.08);
+      gain.gain.setValueAtTime(0.18, now + i * 0.08);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + i * 0.08 + 0.3);
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(now + i * 0.08);
+      osc.stop(now + i * 0.08 + 0.3);
+    }
+  } catch (e) {}
+}
+
+function playPop() {
+  if (!audioEnabled || !audioCtx) return;
+  try {
+    const now = audioCtx.currentTime;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(600, now);
+    osc.frequency.exponentialRampToValueAtTime(200, now + 0.1);
+    gain.gain.setValueAtTime(0.15, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(now);
+    osc.stop(now + 0.12);
+  } catch (e) {}
+}
 
 function spawnHeartBurst(x, y, count, color) {
   const n = Math.min(count, 8); // cap visual bursts
@@ -444,12 +517,15 @@ function startGame() {
       players.set(evt.user, b);
       showAlert(`❤️ <strong>${evt.nickname}</strong> wskakuje! +${heartCount}`, evt.pic);
       spawnHeartBurst(b.x, b.y, heartCount, b.color);
+      playPop();
     } else {
       const p = players.get(evt.user);
       p.taps += heartCount;
       p.growBubble(Math.min(heartCount * 0.3, 5));
       spawnHeartBurst(p.x, p.y, heartCount, p.color);
-      // Only show alert for bursts of 5+ to avoid spam
+      // Random pitch per tap for variety
+      const pitch = 0.8 + Math.random() * 0.6;
+      playTap(pitch);
       if (heartCount >= 3) {
         showAlert(`❤️ <strong>${evt.nickname}</strong> +${heartCount} (${p.taps})`, evt.pic);
       }
@@ -471,11 +547,13 @@ function startGame() {
       p.giveBoost('speed', 8);
       p.growBubble(8);
       showAlert(`🌹 <strong>${evt.nickname}</strong> Rose!`, evt.pic, 'gift');
+      playPop();
     } else if (giftName.includes('mic') || evt.diamondCount >= 99) {
       p.giveBoost('big', 0);
       p.giveBoost('speed', 15);
       showCritical('🎤 BIG BUBBLE', evt.nickname, evt.pic);
       showAlert(`🎤 <strong>${evt.nickname}</strong> BIG BUBBLE!`, evt.pic, 'gift');
+      playCritical();
     } else if (giftName.includes('galaxy') || evt.diamondCount >= 1000) {
       p.targetSize = 150;
       p.paintRadius = 100;
@@ -483,9 +561,11 @@ function startGame() {
       p.giveBoost('speed', 30);
       showCritical('🌌 GALAXY CRITICAL', evt.nickname, evt.pic);
       showAlert(`💥 <strong>${evt.nickname}</strong> GALAXY!`, evt.pic, 'win');
+      playCritical();
     } else {
       p.growBubble(5);
       showAlert(`🎁 <strong>${evt.nickname}</strong> ${evt.giftName}!`, evt.pic, 'gift');
+      playPop();
     }
   });
 
