@@ -1,0 +1,33 @@
+headersOrigin = "config"
+plugins = []
+redirects = []
+
+[functions]
+
+[functions."*"]
+
+[build]
+publish = "C:\\Users\\idzik\\Desktop\\edwards\\tiktok-live-game\\public"
+publishOrigin = "config"
+base = "C:\\Users\\idzik\\Desktop\\edwards\\tiktok-live-game"
+
+[build.environment]
+
+[build.processing]
+
+[build.processing.css]
+
+[build.processing.html]
+
+[build.processing.images]
+
+[build.processing.js]
+
+[build.services]
+
+[[headers]]
+for = "/*"
+
+[headers.values]
+Access-Control-Allow-Origin = "*"
+X-Frame-Options = "SAMEORIGIN"

@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: edward-battle-backend
+    runtime: node
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: EULER_API_KEY
+        value: euler_YWM1NGE3ZWQwYTA3ZGJiMjI2Y2M2MDU1ZWI3ODk1YzM2MDVjZTk0ODYxNGJmM2M5YWQ3NWFm
+      - key: PORT
+        value: 3000

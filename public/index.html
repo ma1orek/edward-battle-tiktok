@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Edward Warchocki Battle Live</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- SETUP SCREEN -->
+<div id="setupScreen">
+  <div class="setup-card">
+    <div class="setup-logo">🤖</div>
+    <h1>EDWARD WARCHOCKI<br>BUBBLE BATTLE</h1>
+    <p>Wpisz swój username TikTok lub link do live'a</p>
+    <input type="text" id="tiktokInput" placeholder="@edwardwarchocki" value="@edwardwarchocki">
+    <button id="startBtn">START GAME</button>
+    <div class="setup-status" id="setupStatus"></div>
+    <div class="setup-help">
+      Możesz wkleić cały URL z TikToka — wyciągnę username automatycznie
+    </div>
+  </div>
+</div>
+
+<!-- GAME -->
+<div id="game-container" class="hidden">
+  <canvas id="paintCanvas"></canvas>
+  <canvas id="gameCanvas"></canvas>
+
+  <!-- Top header -->
+  <div id="header">
+    <div class="hdr-left">
+      <div class="live-badge">
+        <span id="connStatus" class="dot off"></span>
+        LIVE
+      </div>
+      <div class="hdr-stat">
+        👥 <span id="viewerCount">0</span>
+      </div>
+      <div class="hdr-stat">
+        ❤️ <span id="totalLikes">0</span>
+      </div>
+    </div>
+    <div id="timer">3:00</div>
+  </div>
+
+  <!-- Big critical event banner -->
+  <div id="criticalBanner" class="hidden">
+    <img id="critPic" src="" alt="">
+    <div class="crit-content">
+      <div class="crit-label" id="critLabel">CRITICAL</div>
+      <div class="crit-name" id="critName"></div>
+    </div>
+  </div>
+
+  <!-- Coverage leaderboard (bottom) -->
+  <div id="leaderboard">
+    <h3>🏆 TOP 5 — POKRYCIE</h3>
+    <ul id="topPlayers"></ul>
+  </div>
+
+  <!-- Alerts -->
+  <div id="alerts"></div>
+
+  <!-- Test panel (toggle with T) -->
+  <div id="testPanel" class="hidden">
+    <button class="tp-btn" data-action="like">+1 Lajk</button>
+    <button class="tp-btn" data-action="spam">+10 Lajków</button>
+    <button class="tp-btn" data-action="rose">🌹 Rose</button>
+    <button class="tp-btn" data-action="mic">🎤 Mic</button>
+    <button class="tp-btn" data-action="galaxy">🌌 Galaxy</button>
+    <button class="tp-btn" data-action="reset">↻ Reset</button>
+  </div>
+  <button id="testToggle">⚙</button>
+
+  <!-- Winner overlay -->
+  <div id="winnerOverlay" class="hidden">
+    <div class="winner-content">
+      <div class="winner-label">ZWYCIĘZCA!</div>
+      <img id="winnerPic" src="" alt="">
+      <div id="winnerName"></div>
+      <div id="winnerCoverage"></div>
+      <div class="next-round">Następna runda za <span id="nextRoundTimer">10</span>s</div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.4/socket.io.min.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
