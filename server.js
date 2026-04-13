@@ -95,14 +95,27 @@ function setupConnectionHandlers() {
 
   tiktokConn.on('like', data => {
     eventCount.likes++;
-    if (data.totalLikeCount) liveStats.totalLikes = data.totalLikeCount;
+    // Log fields to find the right one
+    if (eventCount.likes <= 5) {
+      console.log('LIKE event fields:', Object.keys(data).join(','));
+      console.log('LIKE data:', JSON.stringify({
+        likeCount: data.likeCount,
+        totalLikeCount: data.totalLikeCount,
+        count: data.count,
+        uniqueId: data.uniqueId,
+        user: data.user?.uniqueId,
+      }));
+    }
+    const count = data.likeCount || data.count || data.likes || 1;
+    const total = data.totalLikeCount || data.totalLikes || liveStats.totalLikes;
+    if (total) liveStats.totalLikes = total;
     io.emit('stats', liveStats);
     io.emit('like', {
       user: data.uniqueId || data.user?.uniqueId || 'unknown',
       nickname: data.nickname || data.user?.nickname || 'Anonim',
       pic: data.profilePictureUrl || data.user?.profilePictureUrl || '',
-      count: data.likeCount || 1,
-      total: data.totalLikeCount || 0,
+      count: count,
+      total: total,
     });
   });
 

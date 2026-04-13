@@ -9,7 +9,6 @@ redirects = []
 [build]
 publish = "C:\\Users\\idzik\\Desktop\\edwards\\tiktok-live-game\\public"
 publishOrigin = "config"
-base = "C:\\Users\\idzik\\Desktop\\edwards\\tiktok-live-game"
 
 [build.environment]
 

@@ -95,7 +95,25 @@ resize();
 // === Game state ===
 const players = new Map();
 const particles = [];
+const hearts = [];  // floating hearts animation
 const avatarCache = new Map();
+
+function spawnHeartBurst(x, y, count, color) {
+  const n = Math.min(count, 8); // cap visual bursts
+  for (let i = 0; i < n; i++) {
+    hearts.push({
+      x: x + (Math.random() - 0.5) * 30,
+      y: y - 10,
+      vx: (Math.random() - 0.5) * 2,
+      vy: -2 - Math.random() * 2,
+      life: 60,
+      maxLife: 60,
+      size: 16 + Math.random() * 8,
+      color: color || '#ff6b9d',
+      delay: i * 3,
+    });
+  }
+}
 
 let roundNum = 1;
 let roundTimeLeft = 180;
@@ -157,17 +175,28 @@ class Bubble {
 
   loadAvatar() {
     if (!this.picUrl) return;
-    const proxyUrl = this.picUrl.startsWith('/') || this.picUrl.startsWith('http')
-      ? (this.picUrl.startsWith('http') ? `${BACKEND_URL}/avatar?url=${encodeURIComponent(this.picUrl)}` : this.picUrl)
+    const proxyUrl = this.picUrl.startsWith('http')
+      ? `${BACKEND_URL}/avatar?url=${encodeURIComponent(this.picUrl)}`
       : this.picUrl;
     if (avatarCache.has(proxyUrl)) {
       this.avatar = avatarCache.get(proxyUrl);
       return;
     }
     const img = new Image();
-    // Don't set crossOrigin — we don't need pixel-level access anymore (coverage is based on paintCount)
-    img.onload = () => { this.avatar = img; avatarCache.set(proxyUrl, img); };
-    img.onerror = () => {};
+    img.onload = () => {
+      this.avatar = img;
+      avatarCache.set(proxyUrl, img);
+    };
+    img.onerror = () => {
+      // Fallback: try direct URL without proxy
+      const fallback = new Image();
+      fallback.onload = () => {
+        this.avatar = fallback;
+        avatarCache.set(proxyUrl, fallback);
+      };
+      fallback.onerror = () => {};
+      fallback.src = this.picUrl;
+    };
     img.src = proxyUrl;
   }
 
@@ -406,16 +435,24 @@ function startGame() {
     if (!roundActive) return;
     if (players.size >= MAX_PLAYERS && !players.has(evt.user)) return;
 
+    // TikTok sends likeCount per batch (many hearts in one event)
+    const heartCount = Math.max(1, evt.count || 1);
+
     if (!players.has(evt.user)) {
       const b = new Bubble(evt);
-      b.taps = 1;
+      b.taps = heartCount;
       players.set(evt.user, b);
-      showAlert(`❤️ <strong>${evt.nickname}</strong> wskakuje!`, evt.pic);
+      showAlert(`❤️ <strong>${evt.nickname}</strong> wskakuje! +${heartCount}`, evt.pic);
+      spawnHeartBurst(b.x, b.y, heartCount, b.color);
     } else {
       const p = players.get(evt.user);
-      p.taps++;
-      p.growBubble(1.5);
-      showAlert(`❤️ <strong>${evt.nickname}</strong> × ${p.taps}`, evt.pic);
+      p.taps += heartCount;
+      p.growBubble(Math.min(heartCount * 0.3, 5));
+      spawnHeartBurst(p.x, p.y, heartCount, p.color);
+      // Only show alert for bursts of 5+ to avoid spam
+      if (heartCount >= 3) {
+        showAlert(`❤️ <strong>${evt.nickname}</strong> +${heartCount} (${p.taps})`, evt.pic);
+      }
     }
   });
 
@@ -546,8 +583,8 @@ function startNewRound() {
   document.getElementById('winnerOverlay').classList.add('hidden');
   players.clear();
   particles.length = 0;
+  hearts.length = 0;
   colorIdx = 0;
-  // Clear paint
   paintCtx.fillStyle = 'rgba(10, 10, 30, 1)';
   paintCtx.fillRect(0, 0, paintCanvas.width, paintCanvas.height);
   roundNum++;
@@ -558,7 +595,7 @@ function startNewRound() {
 // === Update leaderboard ===
 function updateLeaderboard() {
   const top = [...players.values()]
-    .sort((a, b) => b.coverage - a.coverage)
+    .sort((a, b) => (b.taps || 0) - (a.taps || 0))
     .slice(0, 5);
   const ul = document.getElementById('topPlayers');
   ul.innerHTML = '';
@@ -569,12 +606,12 @@ function updateLeaderboard() {
     li.innerHTML = `
       <img src="${proxyPic}" onerror="this.style.display='none'">
       <span class="name" style="color:${p.color}">${p.nickname.slice(0, 12)}</span>
-      <span class="taps">❤️${p.taps || 0}</span>
-      <span class="pct">${(p.coverage * 100).toFixed(1)}%</span>
+      <span class="taps">❤️ ${p.taps || 0}</span>
     `;
     ul.appendChild(li);
   });
-  document.getElementById('playerCount').textContent = players.size;
+  const v = document.getElementById('playerCount');
+  if (v) v.textContent = players.size;
 }
 
 // === Timer ===
@@ -613,6 +650,36 @@ function gameLoop() {
       } catch (e) {
         console.error('Bubble error:', e, p.id);
       }
+    }
+
+    // Update + draw floating hearts
+    for (let i = hearts.length - 1; i >= 0; i--) {
+      const h = hearts[i];
+      if (h.delay > 0) { h.delay--; continue; }
+      h.x += h.vx;
+      h.y += h.vy;
+      h.vy += 0.05; // gentle gravity
+      h.life--;
+      if (h.life <= 0) { hearts.splice(i, 1); continue; }
+
+      const alpha = Math.min(1, h.life / h.maxLife * 1.5);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.translate(h.x, h.y);
+      ctx.scale(h.size / 20, h.size / 20);
+      ctx.fillStyle = h.color;
+      ctx.shadowBlur = 10;
+      ctx.shadowColor = h.color;
+      // Heart shape
+      ctx.beginPath();
+      ctx.moveTo(0, 4);
+      ctx.bezierCurveTo(-10, -6, -14, 4, 0, 14);
+      ctx.bezierCurveTo(14, 4, 10, -6, 0, 4);
+      ctx.fill();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      ctx.restore();
     }
 
     if (roundActive) checkRoundEnd();
