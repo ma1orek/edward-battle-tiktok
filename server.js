@@ -321,9 +321,176 @@ app.post('/connect/:username', async (req, res) => {
   }
 });
 
+// ============================================================
+// MULTI-TENANT MERAROBOTICS ENDPOINTS
+// ------------------------------------------------------------
+// Each robotId (from merarobotics) keeps its own TikTok connection.
+// Events are scoped as `robot:${robotId}:${eventName}` so they
+// don't clash with legacy battle events above.
+// ============================================================
+
+const robotSessions = new Map(); // robotId -> { conn, username, connected, stats, events }
+
+function emitRobot(robotId, event, payload) {
+  io.emit(`robot:${robotId}:${event}`, payload);
+}
+
+function attachRobotHandlers(conn, robotId, s) {
+  conn.on('roomUser', data => {
+    s.stats.viewers = data.viewerCount || data.userCount || 0;
+    emitRobot(robotId, 'stats', s.stats);
+  });
+  conn.on('like', data => {
+    s.events.likes++;
+    const count = data.likeCount || data.count || data.likes || 1;
+    const total = data.totalLikeCount || data.totalLikes || s.stats.totalLikes;
+    if (total) s.stats.totalLikes = total;
+    emitRobot(robotId, 'stats', s.stats);
+    emitRobot(robotId, 'like', {
+      user: data.uniqueId || data.user?.uniqueId || 'unknown',
+      nickname: data.nickname || data.user?.nickname || 'Anonim',
+      pic: data.profilePictureUrl || data.user?.profilePictureUrl || '',
+      count,
+      total,
+    });
+  });
+  conn.on('gift', data => {
+    s.events.gifts++;
+    if (data.giftType === 1 && !data.repeatEnd) return;
+    emitRobot(robotId, 'gift', {
+      user: data.uniqueId || data.user?.uniqueId || 'unknown',
+      nickname: data.nickname || data.user?.nickname || 'Anonim',
+      pic: data.profilePictureUrl || data.user?.profilePictureUrl || '',
+      giftName: data.giftName || 'unknown',
+      giftId: data.giftId,
+      diamondCount: data.diamondCount || 1,
+      repeatCount: data.repeatCount || 1,
+    });
+  });
+  conn.on('chat', data => {
+    s.events.chats++;
+    emitRobot(robotId, 'chat', {
+      user: data.uniqueId || data.user?.uniqueId || 'unknown',
+      nickname: data.nickname || data.user?.nickname || 'Anonim',
+      pic: data.profilePictureUrl || data.user?.profilePictureUrl || '',
+      comment: data.comment || '',
+    });
+  });
+  conn.on('follow', data => {
+    s.events.follows++;
+    emitRobot(robotId, 'follow', {
+      user: data.uniqueId || data.user?.uniqueId || 'unknown',
+      nickname: data.nickname || data.user?.nickname || 'Anonim',
+      pic: data.profilePictureUrl || data.user?.profilePictureUrl || '',
+    });
+  });
+  conn.on('share', data => {
+    emitRobot(robotId, 'share', {
+      user: data.uniqueId || data.user?.uniqueId || 'unknown',
+      nickname: data.nickname || data.user?.nickname || 'Anonim',
+      pic: data.profilePictureUrl || data.user?.profilePictureUrl || '',
+    });
+  });
+  conn.on('disconnected', () => {
+    console.log(`[robot:${robotId}] TikTok disconnected — auto-reconnect in 5s`);
+    s.connected = false;
+    emitRobot(robotId, 'status', { connected: false, username: s.username });
+    if (robotSessions.get(robotId) === s) {
+      setTimeout(() => {
+        if (robotSessions.get(robotId) !== s) return;
+        connectRobot(robotId, s.username).catch(err =>
+          console.warn(`[robot:${robotId}] reconnect failed:`, err.message)
+        );
+      }, 5000);
+    }
+  });
+  conn.on('streamEnd', () => {
+    console.log(`[robot:${robotId}] Stream ended`);
+    s.connected = false;
+    emitRobot(robotId, 'status', { connected: false, ended: true, username: s.username });
+  });
+}
+
+async function connectRobot(robotId, username) {
+  if (!TikTokLiveConnection) throw new Error('TikTok library not loaded');
+  // Stop previous session if any
+  const prev = robotSessions.get(robotId);
+  if (prev) {
+    try { prev.conn.disconnect(); } catch {}
+  }
+  const s = {
+    conn: new TikTokLiveConnection(username, { signApiKey: EULER_API_KEY }),
+    username,
+    connected: false,
+    stats: { viewers: 0, totalLikes: 0 },
+    events: { likes: 0, gifts: 0, chats: 0, follows: 0 },
+  };
+  robotSessions.set(robotId, s);
+  attachRobotHandlers(s.conn, robotId, s);
+  emitRobot(robotId, 'status', { connected: false, connecting: true, username });
+  const state = await s.conn.connect();
+  s.connected = true;
+  emitRobot(robotId, 'status', {
+    connected: true,
+    username,
+    roomId: state.roomId,
+    viewers: state.roomInfo?.user_count,
+  });
+  return state;
+}
+
+app.post('/robot/:robotId/connect/:username', async (req, res) => {
+  const robotId = req.params.robotId;
+  const username = req.params.username.replace(/^@/, '');
+  if (!robotId || !username) return res.status(400).json({ ok: false, message: 'robotId+username required' });
+  console.log(`[robot:${robotId}] Connecting to @${username}...`);
+  try {
+    const state = await connectRobot(robotId, username);
+    res.json({ ok: true, roomId: state.roomId, username });
+  } catch (err) {
+    console.warn(`[robot:${robotId}] Connect failed:`, err.message);
+    emitRobot(robotId, 'status', { connected: false, error: err.message, username });
+    res.status(502).json({ ok: false, message: err.message });
+  }
+});
+
+app.post('/robot/:robotId/disconnect', (req, res) => {
+  const robotId = req.params.robotId;
+  const s = robotSessions.get(robotId);
+  if (s) {
+    try { s.conn.disconnect(); } catch {}
+    robotSessions.delete(robotId);
+    emitRobot(robotId, 'status', { connected: false, username: s.username, reason: 'stopped' });
+  }
+  res.json({ ok: true });
+});
+
+app.get('/robot/:robotId/status', (req, res) => {
+  const s = robotSessions.get(req.params.robotId);
+  if (!s) return res.json({ connected: false });
+  res.json({ connected: s.connected, username: s.username, stats: s.stats, events: s.events });
+});
+
+// ============================================================
+// END multi-tenant block
+// ============================================================
+
 io.on('connection', socket => {
   console.log('Frontend connected');
   socket.emit('status', { connected, username: TIKTOK_USERNAME });
+  // On re-subscribe, replay current status for any active robot the client mentions
+  socket.on('subscribe-robot', (robotId) => {
+    const s = robotSessions.get(robotId);
+    if (s) {
+      socket.emit(`robot:${robotId}:status`, {
+        connected: s.connected,
+        username: s.username,
+      });
+      if (s.stats.viewers || s.stats.totalLikes) {
+        socket.emit(`robot:${robotId}:stats`, s.stats);
+      }
+    }
+  });
 });
 
 server.listen(PORT, () => {
