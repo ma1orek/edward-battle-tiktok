@@ -20,11 +20,58 @@ function extractUsername(input) {
   return s.replace(/^@/, '').split(/[/?]/)[0];
 }
 
+// === Game mode selection ===
+let GAME_MODE = 'bubble'; // 'bubble' | 'race' | 'boars'
+let raceGame = null;
+let boarsGame = null;
+let gameStarted = false; // prevents gameLoop from rendering bubble before launch
+
+// Mode button click handler
+document.querySelectorAll('.mode-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('selected'));
+    btn.classList.add('selected');
+    GAME_MODE = btn.dataset.mode;
+  });
+});
+
 function launchGame() {
-  initAudio(); // init audio on user click (required by browsers)
+  initAudio();
   setupScreen.classList.add('hidden');
   gameContainer.classList.remove('hidden');
   resize();
+
+  // Expose audio globally for game classes
+  window.playPop = playPop;
+  window.playCritical = playCritical;
+  window.playTap = playTap;
+
+  // Clear canvases
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  paintCtx.clearRect(0, 0, paintCanvas.width, paintCanvas.height);
+
+  // Destroy any previously running games
+  raceGame = null;
+  boarsGame = null;
+  players.clear();
+
+  const h3 = document.querySelector('#leaderboard h3');
+
+  // Clean body classes then add for active mode
+  document.body.classList.remove('mode-bubble', 'mode-race', 'mode-boars');
+  document.body.classList.add(`mode-${GAME_MODE}`);
+
+  if (GAME_MODE === 'race') {
+    raceGame = new window.RaceGame(canvas, ctx, BACKEND_URL);
+    if (h3) h3.textContent = '🏁 TOP 5 — WYŚCIG';
+  } else if (GAME_MODE === 'boars') {
+    boarsGame = new window.BoarsGame(canvas, ctx, BACKEND_URL);
+    if (h3) h3.textContent = '🐗 PRZEGONIONYCH DZIKÓW';
+  } else {
+    if (h3) h3.textContent = '🏆 TOP 5 — NAJWIĘCEJ LAJKÓW';
+  }
+
+  gameStarted = true;
   startGame();
 }
 
@@ -193,7 +240,7 @@ let roundTimeLeft = 180;
 let roundActive = true;
 
 const ROUND_DURATION = 180;
-const MAX_PLAYERS = 80;
+const MAX_PLAYERS = 20;
 const NEXT_ROUND_DELAY = 8;
 
 // Vibrant colors for bubbles
@@ -218,12 +265,12 @@ class Bubble {
     this.x = Math.random() * (canvas.width - 200) + 100;
     this.y = Math.random() * (canvas.height - 400) + 200;
 
-    this.vx = (Math.random() - 0.5) * 4;
-    this.vy = (Math.random() - 0.5) * 4;
+    this.vx = (Math.random() - 0.5) * 1.2;
+    this.vy = (Math.random() - 0.5) * 1.2;
 
-    this.size = 38;
-    this.maxSize = 38;
-    this.targetSize = 38;
+    this.size = 40;
+    this.maxSize = 40;
+    this.targetSize = 40;
     this.alive = true;
 
     this.spawnTime = Date.now();
@@ -234,7 +281,7 @@ class Bubble {
     this.speedMulUntil = 0;
     this.shielded = false;
     this.shieldedUntil = 0;
-    this.paintRadius = 22; // base paint radius
+    this.paintRadius = 16; // smaller trail
 
     // Score
     this.coverage = 0;
@@ -306,13 +353,17 @@ class Bubble {
     // Paint trail at current position
     this.paintAt(this.x, this.y);
 
-    // Movement — gentle wandering with variation
-    this.vx += (Math.random() - 0.5) * 0.2;
-    this.vy += (Math.random() - 0.5) * 0.2;
+    // Very gentle wandering
+    this.vx += (Math.random() - 0.5) * 0.06;
+    this.vy += (Math.random() - 0.5) * 0.06;
 
-    // Cap velocity
+    // Friction
+    this.vx *= 0.97;
+    this.vy *= 0.97;
+
+    // Cap velocity — MUCH slower
     const speed = Math.hypot(this.vx, this.vy);
-    const maxSpeed = 3 * this.speedMul;
+    const maxSpeed = 0.9 * this.speedMul;
     if (speed > maxSpeed) {
       this.vx = (this.vx / speed) * maxSpeed;
       this.vy = (this.vy / speed) * maxSpeed;
@@ -504,7 +555,31 @@ function startGame() {
     if (l) l.textContent = (data.totalLikes || 0).toLocaleString('pl-PL');
   });
 
+  // Server signals that it switched to a different live — clear our state
+  socket.on('reset', (data) => {
+    console.log('Reset — backend switched to @' + data.username);
+    players.clear();
+    if (raceGame) raceGame.reset();
+    if (boarsGame) boarsGame.reset();
+    // Clear header stats
+    const v = document.getElementById('viewerCount');
+    const l = document.getElementById('totalLikes');
+    if (v) v.textContent = '0';
+    if (l) l.textContent = '0';
+  });
+
   socket.on('like', (evt) => {
+    // Route to active game mode
+    if (GAME_MODE === 'race' && raceGame) {
+      raceGame.onLike(evt);
+      playTap(0.8 + Math.random() * 0.6);
+      return;
+    }
+    if (GAME_MODE === 'boars' && boarsGame) {
+      boarsGame.onLike(evt);
+      return; // boars handles its own sound
+    }
+
     if (!roundActive) return;
     if (players.size >= MAX_PLAYERS && !players.has(evt.user)) return;
 
@@ -533,6 +608,14 @@ function startGame() {
   });
 
   socket.on('gift', (evt) => {
+    if (GAME_MODE === 'race' && raceGame) {
+      raceGame.onGift(evt);
+      return;
+    }
+    if (GAME_MODE === 'boars' && boarsGame) {
+      boarsGame.onGift(evt);
+      return;
+    }
     if (!roundActive) return;
     if (!players.has(evt.user)) {
       const b = new Bubble(evt);
@@ -696,6 +779,36 @@ function updateLeaderboard() {
 
 // === Timer ===
 setInterval(() => {
+  if (GAME_MODE === 'race' && raceGame) {
+    if (raceGame.active) {
+      raceGame.roundLeft--;
+      if (raceGame.roundLeft < 0) raceGame.roundLeft = 0;
+      const m = Math.floor(raceGame.roundLeft / 60);
+      const s = raceGame.roundLeft % 60;
+      const t = document.getElementById('timer');
+      if (t) t.textContent = `${m}:${s.toString().padStart(2, '0')}`;
+      if (!raceGame.active && raceGame.winner) {
+        setTimeout(() => { if (raceGame) raceGame.reset(); }, 10000);
+      }
+    }
+    return;
+  }
+  if (GAME_MODE === 'boars' && boarsGame) {
+    if (boarsGame.active) {
+      boarsGame.roundLeft--;
+      if (boarsGame.roundLeft < 0) {
+        boarsGame.roundLeft = 0;
+        boarsGame.end();
+        // Auto-restart after 10s
+        setTimeout(() => { if (boarsGame) boarsGame.reset(); }, 10000);
+      }
+      const m = Math.floor(boarsGame.roundLeft / 60);
+      const s = boarsGame.roundLeft % 60;
+      const t = document.getElementById('timer');
+      if (t) t.textContent = `${m}:${s.toString().padStart(2, '0')}`;
+    }
+    return;
+  }
   if (roundActive) {
     roundTimeLeft--;
     if (roundTimeLeft < 0) roundTimeLeft = 0;
@@ -713,14 +826,55 @@ setInterval(() => {
 
 // === Main loop ===
 let lastFrame = Date.now();
+let fadeFrame = 0;
 function gameLoop() {
   try {
     const now = Date.now();
     const dt = (now - lastFrame) / 16.67;
     lastFrame = now;
 
-    // Clear game canvas (paint canvas is permanent)
+    // Clear game canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Nothing to do until game is launched
+    if (!gameStarted) {
+      requestAnimationFrame(gameLoop);
+      return;
+    }
+
+    // === RACE MODE ===
+    if (GAME_MODE === 'race' && raceGame) {
+      paintCtx.clearRect(0, 0, paintCanvas.width, paintCanvas.height);
+      raceGame.tick();
+      raceGame.draw();
+      try { raceGame.updateLeaderboard(); } catch (e) { console.error('race lb:', e); }
+      requestAnimationFrame(gameLoop);
+      return;
+    }
+
+    // === BOARS MODE ===
+    if (GAME_MODE === 'boars' && boarsGame) {
+      paintCtx.clearRect(0, 0, paintCanvas.width, paintCanvas.height);
+      boarsGame.tick();
+      boarsGame.draw();
+      try { boarsGame.updateLeaderboard(); } catch (e) { console.error('boars lb:', e); }
+      requestAnimationFrame(gameLoop);
+      return;
+    }
+
+    // === BUBBLE MODE (default) ===
+    if (GAME_MODE !== 'bubble') {
+      // Unknown mode — just wait
+      requestAnimationFrame(gameLoop);
+      return;
+    }
+
+    // Fade paint canvas slowly (every 2nd frame to save perf)
+    fadeFrame++;
+    if (fadeFrame % 2 === 0) {
+      paintCtx.fillStyle = 'rgba(10, 10, 30, 0.015)';
+      paintCtx.fillRect(0, 0, paintCanvas.width, paintCanvas.height);
+    }
 
     // Update + draw bubbles
     for (const p of players.values()) {

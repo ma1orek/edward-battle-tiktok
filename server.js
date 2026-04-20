@@ -291,21 +291,34 @@ app.get('/status', (req, res) => {
 });
 
 // Connect to a different username on demand
+let connectLock = false;
 app.post('/connect/:username', async (req, res) => {
   const newUsername = req.params.username.replace(/^@/, '');
   if (!newUsername) return res.json({ ok: false, message: 'No username' });
+  if (connectLock) return res.json({ ok: false, message: 'Busy switching, try again' });
+  connectLock = true;
 
-  // Disconnect previous
+  // Disconnect previous, fully reset state
   if (tiktokConn) {
     try { tiktokConn.disconnect(); } catch (e) {}
+    tiktokConn.removeAllListeners && tiktokConn.removeAllListeners();
     tiktokConn = null;
     connected = false;
   }
 
+  // Reset stats so old stream's numbers don't leak
+  liveStats = { viewers: 0, totalLikes: 0 };
+  eventCount = { likes: 0, gifts: 0, chats: 0, follows: 0 };
+
   TIKTOK_USERNAME = newUsername;
-  console.log(`Switching to @${newUsername}...`);
+  console.log(`[SWITCH] Now watching @${newUsername}`);
+
+  // Tell ALL connected frontends to reset their state
+  io.emit('reset', { username: newUsername });
+  io.emit('stats', liveStats);
 
   if (!TikTokLiveConnection) {
+    connectLock = false;
     return res.json({ ok: false, message: 'TikTok library not loaded' });
   }
 
@@ -315,8 +328,10 @@ app.post('/connect/:username', async (req, res) => {
     const state = await tiktokConn.connect();
     connected = true;
     io.emit('status', { connected: true, room: state.roomId, username: newUsername });
+    connectLock = false;
     res.json({ ok: true, room: state.roomId, username: newUsername });
   } catch (err) {
+    connectLock = false;
     res.json({ ok: false, message: err.message || 'Connection failed' });
   }
 });
