@@ -256,39 +256,67 @@ html, body {
   backdrop-filter: blur(10px);
 }
 
-/* Boars mode — compact leaderboard bottom-right only */
+/* Boars mode — compact leaderboard bottom-right */
 body.mode-boars #leaderboard {
   left: auto;
-  right: 12px;
-  bottom: 12px;
-  width: 280px;
-  padding: 8px 10px;
-  border: 1px solid rgba(251,191,36,0.4);
+  right: 14px;
+  bottom: 14px;
+  width: 300px;
+  padding: 10px 12px;
+  border: 2px solid rgba(251,191,36,0.5);
+  background: rgba(10,10,30,0.9);
+  box-shadow: 0 4px 18px rgba(0,0,0,0.5);
 }
 body.mode-boars #leaderboard h3 {
-  font-size: 10px;
-  margin-bottom: 5px;
+  font-size: 11px;
+  margin-bottom: 6px;
   color: #fbbf24;
+  letter-spacing: 1px;
+}
+body.mode-boars #topPlayers {
+  gap: 4px;
 }
 body.mode-boars #topPlayers li {
-  font-size: 10px;
-  padding: 3px 8px;
-  gap: 6px;
+  font-size: 12px;
+  padding: 5px 8px;
+  gap: 7px;
+  background: rgba(0,0,0,0.4);
+}
+body.mode-boars #topPlayers .rank-num {
+  font-size: 15px;
+  font-weight: bold;
+  min-width: 22px;
+  text-align: center;
 }
 body.mode-boars #topPlayers img {
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   border-width: 2px;
+  flex-shrink: 0;
 }
-body.mode-boars #topPlayers .taps {
-  padding: 2px 6px;
-  font-size: 11px;
-  min-width: 42px;
+body.mode-boars #topPlayers .name {
+  font-size: 12px;
+  font-weight: 900;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-body.mode-boars #topPlayers .status-mini {
-  font-size: 9px;
-  color: #aaa;
-  min-width: 48px;
+body.mode-boars #topPlayers .boars-count {
+  font-size: 13px;
+  font-weight: 900;
+  color: #fff;
+  background: linear-gradient(90deg, #ef4444, #f97316);
+  padding: 2px 7px;
+  border-radius: 8px;
+  min-width: 44px;
+  text-align: center;
+}
+body.mode-boars #topPlayers .taps-count {
+  font-size: 10px;
+  color: #fbbf24;
+  font-weight: bold;
+  min-width: 50px;
   text-align: right;
 }
 body.mode-boars #timer,

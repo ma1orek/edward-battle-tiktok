@@ -123,27 +123,24 @@ function setupConnectionHandlers() {
 
   tiktokConn.on('like', data => {
     eventCount.likes++;
-    // Log fields to find the right one
-    if (eventCount.likes <= 5) {
-      console.log('LIKE event fields:', Object.keys(data).join(','));
-      console.log('LIKE data:', JSON.stringify({
-        likeCount: data.likeCount,
-        totalLikeCount: data.totalLikeCount,
-        count: data.count,
-        uniqueId: data.uniqueId,
-        user: data.user?.uniqueId,
-      }));
+    // Defensive: TikTok can send either batch count or running sum under different fields
+    const count = Math.max(1, data.likeCount || data.count || data.likes || 1);
+    const uid = data.uniqueId || data.user?.uniqueId || 'unknown';
+
+    // Track running total of like events we actually received (ground truth for our game)
+    liveStats.totalLikes = (liveStats.totalLikes || 0) + count;
+    // Also keep TikTok's authoritative total if provided
+    if (data.totalLikeCount && data.totalLikeCount > liveStats.totalLikes) {
+      liveStats.totalLikes = data.totalLikeCount;
     }
-    const count = data.likeCount || data.count || data.likes || 1;
-    const total = data.totalLikeCount || data.totalLikes || liveStats.totalLikes;
-    if (total) liveStats.totalLikes = total;
+
     io.emit('stats', liveStats);
     io.emit('like', {
-      user: data.uniqueId || data.user?.uniqueId || 'unknown',
+      user: uid,
       nickname: data.nickname || data.user?.nickname || 'Anonim',
       pic: data.profilePictureUrl || data.user?.profilePictureUrl || '',
       count: count,
-      total: total,
+      total: liveStats.totalLikes,
     });
   });
 

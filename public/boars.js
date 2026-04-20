@@ -113,13 +113,12 @@ class BoarsGame {
     }
     const p = this.players.get(evt.user);
 
-    // Process taps one by one (in batches to handle big burst)
+    // Process taps
     for (let i = 0; i < count; i++) {
       p.currentTaps++;
       p.totalTaps++;
       this.totalTaps++;
 
-      // Check if boar is chased
       if (p.currentTaps >= TAPS_TO_CHASE) {
         this.escapeBoar(p);
         p.boarsChased++;
@@ -128,15 +127,28 @@ class BoarsGame {
       }
     }
 
-    // Tap animation (small boar flash)
+    // === INSTANT VISUAL MOVE per burst ===
+    // Each like pushes boar forward IMMEDIATELY by the exact visual portion.
+    // This way even single taps are visible, not hidden behind smoothing.
+    const deltaProgress = count / TAPS_TO_CHASE;
+    p.boarX = Math.min(0.85, p.boarX + deltaProgress * 0.77);
+
+    // Big pop effect for visibility
     p.lastTapTime = Date.now();
-    p.tapScale = 1.4; // pop
-    p.boarWobble = Math.random() * 0.4 - 0.2;
+    p.tapScale = Math.min(1.5, p.tapScale + 0.15 + Math.min(0.2, count * 0.01));
+    p.boarWobble += (Math.random() - 0.5) * 0.3;
+    p.boarWobble = Math.max(-0.4, Math.min(0.4, p.boarWobble));
 
-    this.spawnTapFlash(p);
+    // Flash effect for visibility
+    p.tapFlash = 1.0; // will decay in tick()
 
-    // Sound for tap (throttled)
-    if (Date.now() - (p._lastSound || 0) > 80) {
+    // Particles
+    if (this.particles.length < 200) {
+      this.spawnTapFlash(p);
+    }
+
+    // Sound
+    if (Date.now() - (p._lastSound || 0) > 120) {
       p._lastSound = Date.now();
       if (window.playTap) window.playTap(0.7 + Math.random() * 0.5);
     }
@@ -199,29 +211,31 @@ class BoarsGame {
     const bx = (0.08 + progress * 0.77) * w;
     const by = p.boarY * h;
 
-    // Small dust particles behind boar (running effect)
-    for (let i = 0; i < 3; i++) {
+    // Only 1-2 dust particles (was 3)
+    for (let i = 0; i < 2; i++) {
       this.particles.push({
-        x: bx - 20 + Math.random() * 10,
-        y: by + 10 + (Math.random() - 0.5) * 10,
+        x: bx - 30 + Math.random() * 15,
+        y: by + 15 + (Math.random() - 0.5) * 10,
         vx: -1 - Math.random() * 2,
         vy: -0.5 - Math.random() * 1,
-        life: 20,
-        maxLife: 20,
+        life: 18,
+        maxLife: 18,
         size: 4 + Math.random() * 4,
         color: '#8b7355',
       });
     }
 
-    // Little heart
-    this.tapAnimations.push({
-      x: bx + (Math.random() - 0.5) * 20,
-      y: by - 20,
-      vy: -2,
-      life: 30,
-      maxLife: 30,
-      size: 14,
-    });
+    // Little heart (cap at 50 hearts max)
+    if (this.tapAnimations.length < 50) {
+      this.tapAnimations.push({
+        x: bx + (Math.random() - 0.5) * 30,
+        y: by - 30,
+        vy: -2,
+        life: 28,
+        maxLife: 28,
+        size: 16,
+      });
+    }
   }
 
   tick() {
@@ -230,10 +244,25 @@ class BoarsGame {
     // Update boar positions (0.08 Warsaw → 0.85 forest)
     for (const p of this.players.values()) {
       const targetX = 0.08 + (p.currentTaps / TAPS_TO_CHASE) * 0.77;
-      p.boarX += (targetX - p.boarX) * 0.12;
+      const dx = targetX - p.boarX;
 
-      p.tapScale += (1 - p.tapScale) * 0.15;
-      p.boarWobble *= 0.85;
+      // Fast catch-up: 40% per frame + min step so they keep moving even for tiny diffs
+      if (Math.abs(dx) > 0.0005) {
+        p.boarX += dx * 0.4 + Math.sign(dx) * 0.0008; // min step = 0.08% per frame
+      } else {
+        p.boarX = targetX;
+      }
+
+      p.tapScale += (1 - p.tapScale) * 0.22;
+      p.boarWobble *= 0.88;
+
+      // Running bobble — always animate while moving
+      if (dx > 0.0005) {
+        p._runPhase = (p._runPhase || 0) + 0.3;
+        p.boarBob = Math.sin(p._runPhase) * 5;
+      } else {
+        p.boarBob = (p.boarBob || 0) * 0.85;
+      }
     }
 
     // Update escaped boars
@@ -429,9 +458,9 @@ class BoarsGame {
       ctx.fillText(`${p.currentTaps}/${TAPS_TO_CHASE}`, boarX, barY - 8);
       ctx.shadowBlur = 0;
 
-      // BIG Boar emoji (TV-friendly)
+      // BIG Boar emoji (TV-friendly) + running bobble
       ctx.save();
-      ctx.translate(boarX, boarY);
+      ctx.translate(boarX, boarY + (p.boarBob || 0));
       ctx.rotate(p.boarWobble);
       ctx.scale(p.tapScale, p.tapScale);
       ctx.font = '78px Arial';
@@ -537,74 +566,36 @@ class BoarsGame {
     ctx.fillText(timerTxt, w / 2, tBoxY + 48);
     ctx.restore();
 
-    // === STATS ROW below timer ===
+    // === STATS ROW below timer (simple: only chased boars) ===
     ctx.save();
-    ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    const statsW = 380;
-    ctx.fillRect(w / 2 - statsW / 2, tBoxY + tBoxH + 8, statsW, 30);
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    const statsW = 280;
+    ctx.fillRect(w / 2 - statsW / 2, tBoxY + tBoxH + 10, statsW, 36);
+    ctx.strokeStyle = 'rgba(251,191,36,0.4)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(w / 2 - statsW / 2, tBoxY + tBoxH + 10, statsW, 36);
     ctx.fillStyle = '#fff';
-    ctx.font = 'bold 13px Arial';
+    ctx.font = 'bold 20px Arial';
     ctx.textAlign = 'center';
     ctx.fillText(
-      `🐗 Przegonionych dzików: ${this.totalChased}   |   ❤️ Tapnięć: ${this.totalTaps}`,
-      w / 2, tBoxY + tBoxH + 28
+      `🐗 Przegonionych: ${this.totalChased}`,
+      w / 2, tBoxY + tBoxH + 35
     );
     ctx.restore();
 
-    // === TOP 3 BANNER (below stats) ===
-    const top3 = [...this.players.values()]
-      .filter(p => p.boarsChased > 0 || p.currentTaps > 0)
-      .sort((a, b) => {
-        if (b.boarsChased !== a.boarsChased) return b.boarsChased - a.boarsChased;
-        return b.currentTaps - a.currentTaps;
-      })
-      .slice(0, 3);
-
-    if (top3.length > 0) {
-      const bannerY = tBoxY + tBoxH + 48;
-      const bannerW = 460;
-      const bannerH = 42;
-      const bannerX = w / 2 - bannerW / 2;
-      ctx.save();
-      ctx.fillStyle = 'rgba(0,0,0,0.7)';
-      ctx.fillRect(bannerX, bannerY, bannerW, bannerH);
-      ctx.strokeStyle = '#fbbf24';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(bannerX, bannerY, bannerW, bannerH);
-
-      ctx.fillStyle = '#fbbf24';
-      ctx.font = 'bold 10px Arial';
-      ctx.textAlign = 'center';
-      ctx.fillText('👑 TOP 3 ŁOWCÓW DZIKÓW 👑', w / 2, bannerY + 11);
-
-      // Draw top 3 horizontally
-      const colW = bannerW / 3;
-      for (let i = 0; i < top3.length; i++) {
-        const pl = top3[i];
-        const colX = bannerX + colW * i + colW / 2;
-        const colY = bannerY + 28;
-        const medals = ['🥇', '🥈', '🥉'];
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 14px Arial';
-        ctx.fillText(`${medals[i]} ${pl.nickname.slice(0, 10)}`, colX, colY);
-        ctx.fillStyle = '#fbbf24';
-        ctx.font = 'bold 11px Arial';
-        ctx.fillText(`🐗 ${pl.boarsChased}`, colX, colY + 13);
-      }
-      ctx.restore();
-    }
   }
 
   updateLeaderboard() {
     const top = [...this.players.values()]
       .sort((a, b) => {
         if (b.boarsChased !== a.boarsChased) return b.boarsChased - a.boarsChased;
-        return b.currentTaps - a.currentTaps;
+        return b.totalTaps - a.totalTaps;
       })
       .slice(0, 5);
     const ul = document.getElementById('topPlayers');
     if (!ul) return;
     ul.innerHTML = '';
+    const medals = ['🥇', '🥈', '🥉', '4.', '5.'];
     top.forEach((p, i) => {
       const li = document.createElement('li');
       li.className = `rank-${i + 1}`;
@@ -612,10 +603,11 @@ class BoarsGame {
         ? `${this.BACKEND_URL}/avatar?url=${encodeURIComponent(p.picUrl)}`
         : (p.picUrl || '');
       li.innerHTML = `
+        <span class="rank-num">${medals[i]}</span>
         <img src="${proxyPic}" onerror="this.style.display='none'">
-        <span class="name" style="color:${p.boarColor}">${p.nickname.slice(0, 12)}</span>
-        <span class="taps">🐗 ${p.boarsChased}</span>
-        <span class="status-mini">${p.currentTaps}/${TAPS_TO_CHASE}</span>
+        <span class="name" style="color:${p.boarColor}">${p.nickname.slice(0, 14)}</span>
+        <span class="boars-count">🐗 ${p.boarsChased}</span>
+        <span class="taps-count">❤️ ${p.totalTaps}</span>
       `;
       ul.appendChild(li);
     });
