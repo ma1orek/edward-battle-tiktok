@@ -336,11 +336,18 @@ function emitRobot(robotId, event, payload) {
 }
 
 function attachRobotHandlers(conn, robotId, s) {
+  // Guard: ignore events from stale sessions that were superseded by a
+  // newer connectRobot(robotId, ...) call. Without this, old TikTok conns
+  // keep firing after switch and client receives two streams overlapping.
+  const active = () => robotSessions.get(robotId) === s;
+
   conn.on('roomUser', data => {
+    if (!active()) return;
     s.stats.viewers = data.viewerCount || data.userCount || 0;
     emitRobot(robotId, 'stats', s.stats);
   });
   conn.on('like', data => {
+    if (!active()) return;
     s.events.likes++;
     const count = data.likeCount || data.count || data.likes || 1;
     const total = data.totalLikeCount || data.totalLikes || s.stats.totalLikes;
@@ -355,6 +362,7 @@ function attachRobotHandlers(conn, robotId, s) {
     });
   });
   conn.on('gift', data => {
+    if (!active()) return;
     s.events.gifts++;
     if (data.giftType === 1 && !data.repeatEnd) return;
     emitRobot(robotId, 'gift', {
@@ -368,6 +376,7 @@ function attachRobotHandlers(conn, robotId, s) {
     });
   });
   conn.on('chat', data => {
+    if (!active()) return;
     s.events.chats++;
     emitRobot(robotId, 'chat', {
       user: data.uniqueId || data.user?.uniqueId || 'unknown',
@@ -377,6 +386,7 @@ function attachRobotHandlers(conn, robotId, s) {
     });
   });
   conn.on('follow', data => {
+    if (!active()) return;
     s.events.follows++;
     emitRobot(robotId, 'follow', {
       user: data.uniqueId || data.user?.uniqueId || 'unknown',
@@ -385,6 +395,7 @@ function attachRobotHandlers(conn, robotId, s) {
     });
   });
   conn.on('share', data => {
+    if (!active()) return;
     emitRobot(robotId, 'share', {
       user: data.uniqueId || data.user?.uniqueId || 'unknown',
       nickname: data.nickname || data.user?.nickname || 'Anonim',
@@ -392,19 +403,19 @@ function attachRobotHandlers(conn, robotId, s) {
     });
   });
   conn.on('disconnected', () => {
+    if (!active()) return; // stale session, do not auto-reconnect
     console.log(`[robot:${robotId}] TikTok disconnected — auto-reconnect in 5s`);
     s.connected = false;
     emitRobot(robotId, 'status', { connected: false, username: s.username });
-    if (robotSessions.get(robotId) === s) {
-      setTimeout(() => {
-        if (robotSessions.get(robotId) !== s) return;
-        connectRobot(robotId, s.username).catch(err =>
-          console.warn(`[robot:${robotId}] reconnect failed:`, err.message)
-        );
-      }, 5000);
-    }
+    setTimeout(() => {
+      if (robotSessions.get(robotId) !== s) return;
+      connectRobot(robotId, s.username).catch(err =>
+        console.warn(`[robot:${robotId}] reconnect failed:`, err.message)
+      );
+    }, 5000);
   });
   conn.on('streamEnd', () => {
+    if (!active()) return;
     console.log(`[robot:${robotId}] Stream ended`);
     s.connected = false;
     emitRobot(robotId, 'status', { connected: false, ended: true, username: s.username });
@@ -413,10 +424,13 @@ function attachRobotHandlers(conn, robotId, s) {
 
 async function connectRobot(robotId, username) {
   if (!TikTokLiveConnection) throw new Error('TikTok library not loaded');
-  // Stop previous session if any
+  // Stop previous session if any — remove listeners first so any buffered
+  // events don't leak into the new session (two lives overlapping symptom).
   const prev = robotSessions.get(robotId);
   if (prev) {
+    try { prev.conn.removeAllListeners(); } catch {}
     try { prev.conn.disconnect(); } catch {}
+    robotSessions.delete(robotId);
   }
   const s = {
     conn: new TikTokLiveConnection(username, { signApiKey: EULER_API_KEY }),
