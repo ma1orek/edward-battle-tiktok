@@ -368,26 +368,55 @@ function attachRobotHandlers(conn, robotId, s) {
   // keep firing after switch and client receives two streams overlapping.
   const active = () => robotSessions.get(robotId) === s;
 
+  // === High-frequency event throttling ===
+  // At 10k viewers TikTok fires hundreds of like events per second.
+  // Emitting each over socket.io single-threads Node and saturates WSS.
+  // We keep the *exact* totals (incremented synchronously on every event)
+  // but flush to subscribers at a fixed cadence with the running aggregate.
+  s.likeBuffer = { count: 0, lastUser: null, lastNick: null, lastPic: null };
+  s.statsDirty = false;
+
+  // Flush every 500ms — fast enough for the heart counter to feel alive,
+  // slow enough that Node + socket.io aren't melting at 10k viewers.
+  s.flushInterval = setInterval(() => {
+    if (!active()) return;
+    if (s.likeBuffer.count > 0) {
+      emitRobot(robotId, 'like', {
+        user: s.likeBuffer.lastUser || 'unknown',
+        nickname: s.likeBuffer.lastNick || 'Anonim',
+        pic: s.likeBuffer.lastPic || '',
+        count: s.likeBuffer.count,
+        total: s.stats.totalLikes,
+      });
+      s.likeBuffer = { count: 0, lastUser: null, lastNick: null, lastPic: null };
+    }
+    if (s.statsDirty) {
+      emitRobot(robotId, 'stats', s.stats);
+      s.statsDirty = false;
+    }
+  }, 500);
+
   conn.on('roomUser', data => {
     if (!active()) return;
     s.lastEventAt = Date.now();
     s.stats.viewers = data.viewerCount || data.userCount || 0;
-    emitRobot(robotId, 'stats', s.stats);
+    s.statsDirty = true;  // batched flush every 500ms
   });
   conn.on('like', data => {
     if (!active()) return;
     s.events.likes++;
+    s.lastEventAt = Date.now();
     const count = data.likeCount || data.count || data.likes || 1;
-    const total = data.totalLikeCount || data.totalLikes || s.stats.totalLikes;
-    if (total) s.stats.totalLikes = total;
-    emitRobot(robotId, 'stats', s.stats);
-    emitRobot(robotId, 'like', {
-      user: data.uniqueId || data.user?.uniqueId || 'unknown',
-      nickname: data.nickname || data.user?.nickname || 'Anonim',
-      pic: data.profilePictureUrl || data.user?.profilePictureUrl || '',
-      count,
-      total,
-    });
+    const total = data.totalLikeCount || data.totalLikes;
+    if (total && total > s.stats.totalLikes) s.stats.totalLikes = total;
+    else s.stats.totalLikes = (s.stats.totalLikes || 0) + count;
+
+    // Aggregate into buffer; periodic flusher emits the batch.
+    s.likeBuffer.count += count;
+    s.likeBuffer.lastUser = data.uniqueId || data.user?.uniqueId || s.likeBuffer.lastUser;
+    s.likeBuffer.lastNick = data.nickname || data.user?.nickname || s.likeBuffer.lastNick;
+    s.likeBuffer.lastPic = data.profilePictureUrl || data.user?.profilePictureUrl || s.likeBuffer.lastPic;
+    s.statsDirty = true;
   });
   conn.on('gift', data => {
     if (!active()) return;
@@ -462,6 +491,7 @@ async function connectRobot(robotId, username) {
   // events don't leak into the new session (two lives overlapping symptom).
   const prev = robotSessions.get(robotId);
   if (prev) {
+    if (prev.flushInterval) clearInterval(prev.flushInterval);
     try { prev.conn.removeAllListeners(); } catch {}
     try { prev.conn.disconnect(); } catch {}
     robotSessions.delete(robotId);
@@ -509,6 +539,7 @@ app.post('/robot/:robotId/disconnect', (req, res) => {
   const robotId = req.params.robotId;
   const s = robotSessions.get(robotId);
   if (s) {
+    if (s.flushInterval) clearInterval(s.flushInterval);
     try { s.conn.disconnect(); } catch {}
     robotSessions.delete(robotId);
     emitRobot(robotId, 'status', { connected: false, username: s.username, reason: 'stopped' });
@@ -570,6 +601,7 @@ function gracefulShutdown(signal) {
   console.log(`[shutdown] ${signal} received, closing connections...`);
   // Disconnect every robot session
   for (const [robotId, s] of robotSessions.entries()) {
+    if (s.flushInterval) clearInterval(s.flushInterval);
     try { s.conn.removeAllListeners(); } catch {}
     try { s.conn.disconnect(); } catch {}
     emitRobot(robotId, 'status', { connected: false, reason: 'server-shutdown', username: s.username });
@@ -600,6 +632,7 @@ setInterval(() => {
   const now = Date.now();
   for (const [robotId, s] of robotSessions.entries()) {
     if (!s.connected && (now - (s.lastEventAt || s.startedAt || now)) > 10 * 60 * 1000) {
+      if (s.flushInterval) clearInterval(s.flushInterval);
       try { s.conn.removeAllListeners(); } catch {}
       try { s.conn.disconnect(); } catch {}
       robotSessions.delete(robotId);
