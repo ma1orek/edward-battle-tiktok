@@ -44,6 +44,21 @@ app.use((req, res, next) => {
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/assets', express.static(path.join(__dirname, 'assets')));
 
+// === Health endpoint — Render reads this to decide on auto-restart ===
+const startedAt = Date.now();
+app.get('/health', (req, res) => {
+  const mem = process.memoryUsage();
+  res.json({
+    ok: true,
+    uptimeSec: Math.round((Date.now() - startedAt) / 1000),
+    sessions: robotSessions ? robotSessions.size : 0,
+    legacyConnected: connected,
+    memMb: Math.round(mem.rss / 1024 / 1024),
+    heapMb: Math.round(mem.heapUsed / 1024 / 1024),
+    eventsTotal: eventCount,
+  });
+});
+
 // Avatar proxy — bypasses CORS for TikTok CDN
 const https = require('https');
 const httpLib = require('http');
@@ -355,6 +370,7 @@ function attachRobotHandlers(conn, robotId, s) {
 
   conn.on('roomUser', data => {
     if (!active()) return;
+    s.lastEventAt = Date.now();
     s.stats.viewers = data.viewerCount || data.userCount || 0;
     emitRobot(robotId, 'stats', s.stats);
   });
@@ -416,15 +432,21 @@ function attachRobotHandlers(conn, robotId, s) {
   });
   conn.on('disconnected', () => {
     if (!active()) return; // stale session, do not auto-reconnect
-    console.log(`[robot:${robotId}] TikTok disconnected — auto-reconnect in 5s`);
+    // Exponential backoff: 5s -> 15s -> 45s -> capped 120s. Prevents
+    // hammering EulerStream / TikTok when the room is offline or rate-limited.
+    s.reconnectAttempts = (s.reconnectAttempts || 0) + 1;
+    const delay = Math.min(120000, 5000 * Math.pow(3, s.reconnectAttempts - 1));
+    console.log(`[robot:${robotId}] TikTok disconnected — reconnect attempt ${s.reconnectAttempts} in ${delay}ms`);
     s.connected = false;
     emitRobot(robotId, 'status', { connected: false, username: s.username });
     setTimeout(() => {
       if (robotSessions.get(robotId) !== s) return;
-      connectRobot(robotId, s.username).catch(err =>
-        console.warn(`[robot:${robotId}] reconnect failed:`, err.message)
-      );
-    }, 5000);
+      connectRobot(robotId, s.username)
+        .then(() => { s.reconnectAttempts = 0; })
+        .catch(err =>
+          console.warn(`[robot:${robotId}] reconnect failed:`, err.message)
+        );
+    }, delay);
   });
   conn.on('streamEnd', () => {
     if (!active()) return;
@@ -450,6 +472,9 @@ async function connectRobot(robotId, username) {
     connected: false,
     stats: { viewers: 0, totalLikes: 0 },
     events: { likes: 0, gifts: 0, chats: 0, follows: 0 },
+    startedAt: Date.now(),
+    lastEventAt: Date.now(),
+    reconnectAttempts: 0,
   };
   robotSessions.set(robotId, s);
   attachRobotHandlers(s.conn, robotId, s);
@@ -532,6 +557,55 @@ server.listen(PORT, () => {
   console.log(`  GET /test/gift/galaxy    — fake galaxy gift`);
   console.log(`  GET /test/spam           — spam 50 likes`);
   console.log(`  GET /status              — server status`);
+  console.log(`  GET /health              — render healthcheck`);
   console.log(`========================================`);
   startTikTokConnection();
 });
+
+// === Graceful shutdown ===
+// Render sends SIGTERM 30s before recycling the container. Without this,
+// active TikTok WS connections are killed mid-frame and the next start
+// hits EulerStream rate limits ("too many open conns from same IP").
+function gracefulShutdown(signal) {
+  console.log(`[shutdown] ${signal} received, closing connections...`);
+  // Disconnect every robot session
+  for (const [robotId, s] of robotSessions.entries()) {
+    try { s.conn.removeAllListeners(); } catch {}
+    try { s.conn.disconnect(); } catch {}
+    emitRobot(robotId, 'status', { connected: false, reason: 'server-shutdown', username: s.username });
+  }
+  robotSessions.clear();
+  if (tiktokConn) {
+    try { tiktokConn.removeAllListeners(); } catch {}
+    try { tiktokConn.disconnect(); } catch {}
+  }
+  io.close(() => console.log('[shutdown] socket.io closed'));
+  server.close(() => {
+    console.log('[shutdown] http server closed, exiting');
+    process.exit(0);
+  });
+  // Hard-exit after 10s if anything hangs
+  setTimeout(() => {
+    console.warn('[shutdown] timeout — force exit');
+    process.exit(1);
+  }, 10000).unref();
+}
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+// === Stale-session sweeper ===
+// Every 60s, drop sessions that are not connected AND have been idle for 10min.
+// Prevents stuck/zombie sessions from leaking memory if a frontend forgot to disconnect.
+setInterval(() => {
+  const now = Date.now();
+  for (const [robotId, s] of robotSessions.entries()) {
+    if (!s.connected && (now - (s.lastEventAt || s.startedAt || now)) > 10 * 60 * 1000) {
+      try { s.conn.removeAllListeners(); } catch {}
+      try { s.conn.disconnect(); } catch {}
+      robotSessions.delete(robotId);
+      console.log(`[sweeper] dropped idle session robotId=${robotId}`);
+    }
+  }
+  const mem = Math.round(process.memoryUsage().rss / 1024 / 1024);
+  if (mem > 400) console.warn(`[mem] high RSS: ${mem}MB, sessions=${robotSessions.size}`);
+}, 60000).unref();
