@@ -28,6 +28,27 @@ let TIKTOK_USERNAME = process.env.TIKTOK_USERNAME || 'edwardwarchocki';
 const PORT = process.env.PORT || 3000;
 const EULER_API_KEY = process.env.EULER_API_KEY || 'euler_YWM1NGE3ZWQwYTA3ZGJiMjI2Y2M2MDU1ZWI3ODk1YzM2MDVjZTk0ODYxNGJmM2M5YWQ3NWFm';
 
+// Cookie sessionid z ZALOGOWANEGO konta TikTok — bez niego anty-bot potrafi
+// wywalic anonimowe polaczenie po ~5 min. Zrodla (env ma priorytet):
+//   1) env TIKTOK_SESSION_ID, 2) Supabase secrets key='tiktok_session_id'
+//      (odswiezanie co 10 min = rotacja bez redeployu).
+let TIKTOK_SESSION_ID = process.env.TIKTOK_SESSION_ID || '';
+if (TIKTOK_SESSION_ID) console.log('TIKTOK_SESSION_ID active (env)');
+const SB_URL = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || '';
+const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.VITE_SUPABASE_SERVICE_KEY || '';
+async function refreshSessionFromSupabase() {
+  if (process.env.TIKTOK_SESSION_ID) return;
+  if (!SB_URL || !SB_KEY || typeof fetch !== 'function') return;
+  try {
+    const r = await fetch(SB_URL + '/rest/v1/secrets?key=eq.tiktok_session_id&select=value', { headers: { apikey: SB_KEY, Authorization: 'Bearer ' + SB_KEY } });
+    const rows = await r.json();
+    const val = Array.isArray(rows) && rows[0] && rows[0].value ? String(rows[0].value).trim() : '';
+    if (val && val !== TIKTOK_SESSION_ID) { TIKTOK_SESSION_ID = val; console.log('TIKTOK_SESSION_ID active (Supabase)'); }
+  } catch (e) { console.warn('[tiktok-session] Supabase fetch failed:', e && e.message); }
+}
+refreshSessionFromSupabase();
+setInterval(refreshSessionFromSupabase, 10 * 60 * 1000);
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
@@ -218,6 +239,7 @@ function createConnection(username) {
   // Pass EulerStream API key for higher rate limits
   return new TikTokLiveConnection(username, {
     signApiKey: EULER_API_KEY,
+    ...(TIKTOK_SESSION_ID ? { sessionId: TIKTOK_SESSION_ID } : {}),
   });
 }
 
@@ -497,7 +519,7 @@ async function connectRobot(robotId, username) {
     robotSessions.delete(robotId);
   }
   const s = {
-    conn: new TikTokLiveConnection(username, { signApiKey: EULER_API_KEY }),
+    conn: new TikTokLiveConnection(username, { signApiKey: EULER_API_KEY, ...(TIKTOK_SESSION_ID ? { sessionId: TIKTOK_SESSION_ID } : {}) }),
     username,
     connected: false,
     stats: { viewers: 0, totalLikes: 0 },
