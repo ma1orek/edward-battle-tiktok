@@ -481,6 +481,25 @@ function attachRobotHandlers(conn, robotId, s) {
       pic: data.profilePictureUrl || data.user?.profilePictureUrl || '',
     });
   });
+  // member = widz WSZEDŁ na live. Duże live'y floodują joinami, więc buforujemy
+  // 3s i wysyłamy paczkę nicków (front wita ich imiennie w „ekipie Edwarda").
+  s.joinBuffer = [];
+  s.joinTimer = null;
+  conn.on('member', data => {
+    if (!active()) return;
+    const nick = data.nickname || data.user?.nickname || data.uniqueId || data.user?.uniqueId;
+    if (!nick) return;
+    s.lastEventAt = Date.now();
+    if (!s.joinBuffer.includes(nick)) s.joinBuffer.push(nick);
+    if (s.joinTimer) return;
+    s.joinTimer = setTimeout(() => {
+      s.joinTimer = null;
+      if (!active() || !s.joinBuffer.length) return;
+      const nicks = s.joinBuffer.splice(0, 5);
+      s.joinBuffer = [];
+      emitRobot(robotId, 'member', { nicks });
+    }, 3000);
+  });
   conn.on('disconnected', () => {
     if (!active()) return; // stale session, do not auto-reconnect
     // Exponential backoff: 5s -> 15s -> 45s -> capped 120s. Prevents
