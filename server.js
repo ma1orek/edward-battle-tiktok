@@ -418,6 +418,30 @@ function attachRobotHandlers(conn, robotId, s) {
     }
   }, 500);
 
+  // RESYNC z room info co 10 s (2026-07-26: licznik na /ekran odjeżdżał kilka
+  // tysięcy W TYŁ od realnego wyniku z apki — przy dużym ruchu część eventów
+  // like nie dociera / idzie bez totalLikeCount i akumulacja gubi serduszka).
+  // fetchRoomInfo() to AUTORYTATYWNA liczba z TikToka — jak wyższa, skaczemy
+  // do niej. Ścieżki pól defensywnie (v2 zwraca snake_case room JSON).
+  s.roomInfoInterval = setInterval(async () => {
+    if (!active()) return;
+    try {
+      const info = await (typeof s.conn.fetchRoomInfo === 'function'
+        ? s.conn.fetchRoomInfo()
+        : (typeof s.conn.getRoomInfo === 'function' ? s.conn.getRoomInfo() : null));
+      if (!info) return;
+      const rl = info.like_count ?? info.stats?.like_count ?? info.likeCount
+        ?? info.data?.like_count ?? info.data?.stats?.like_count;
+      if (typeof rl === 'number' && rl > s.stats.totalLikes) {
+        console.log(`[robot:${robotId}] like-resync: ${s.stats.totalLikes} -> ${rl}`);
+        s.stats.totalLikes = rl;
+        s.statsDirty = true;
+      }
+      const rv = info.user_count ?? info.stats?.user_count ?? info.data?.user_count;
+      if (typeof rv === 'number' && rv > 0) { s.stats.viewers = rv; s.statsDirty = true; }
+    } catch { /* room info chwilowo niedostępne — eventy dalej liczą */ }
+  }, 10000);
+
   conn.on('roomUser', data => {
     if (!active()) return;
     s.lastEventAt = Date.now();
@@ -430,8 +454,10 @@ function attachRobotHandlers(conn, robotId, s) {
     s.lastEventAt = Date.now();
     const count = data.likeCount || data.count || data.likes || 1;
     const total = data.totalLikeCount || data.totalLikes;
+    // total z eventu = prawda o pokoju. Gdy total OBECNY ale <= nasz licznik,
+    // NIE dodawaj count (stary else podwójnie liczył te same serduszka).
     if (total && total > s.stats.totalLikes) s.stats.totalLikes = total;
-    else s.stats.totalLikes = (s.stats.totalLikes || 0) + count;
+    else if (!total) s.stats.totalLikes = (s.stats.totalLikes || 0) + count;
 
     // Aggregate into buffer; periodic flusher emits the batch.
     s.likeBuffer.count += count;
@@ -533,6 +559,7 @@ async function connectRobot(robotId, username) {
   const prev = robotSessions.get(robotId);
   if (prev) {
     if (prev.flushInterval) clearInterval(prev.flushInterval);
+    if (prev.roomInfoInterval) clearInterval(prev.roomInfoInterval);
     try { prev.conn.removeAllListeners(); } catch {}
     try { prev.conn.disconnect(); } catch {}
     robotSessions.delete(robotId);
@@ -581,6 +608,7 @@ app.post('/robot/:robotId/disconnect', (req, res) => {
   const s = robotSessions.get(robotId);
   if (s) {
     if (s.flushInterval) clearInterval(s.flushInterval);
+    if (s.roomInfoInterval) clearInterval(s.roomInfoInterval);
     try { s.conn.disconnect(); } catch {}
     robotSessions.delete(robotId);
     emitRobot(robotId, 'status', { connected: false, username: s.username, reason: 'stopped' });
@@ -643,6 +671,7 @@ function gracefulShutdown(signal) {
   // Disconnect every robot session
   for (const [robotId, s] of robotSessions.entries()) {
     if (s.flushInterval) clearInterval(s.flushInterval);
+    if (s.roomInfoInterval) clearInterval(s.roomInfoInterval);
     try { s.conn.removeAllListeners(); } catch {}
     try { s.conn.disconnect(); } catch {}
     emitRobot(robotId, 'status', { connected: false, reason: 'server-shutdown', username: s.username });
@@ -674,6 +703,7 @@ setInterval(() => {
   for (const [robotId, s] of robotSessions.entries()) {
     if (!s.connected && (now - (s.lastEventAt || s.startedAt || now)) > 10 * 60 * 1000) {
       if (s.flushInterval) clearInterval(s.flushInterval);
+      if (s.roomInfoInterval) clearInterval(s.roomInfoInterval);
       try { s.conn.removeAllListeners(); } catch {}
       try { s.conn.disconnect(); } catch {}
       robotSessions.delete(robotId);
